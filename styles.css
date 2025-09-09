@@ -1,0 +1,26 @@
+/*
+
+This CSS file will be included with your plugin, and
+available in the app when your plugin is enabled.
+
+If your plugin does not need CSS, delete this file.
+
+*/
+
+.github-api-sync-container {
+  padding: 1rem;
+  height: 100%;
+  overflow-y: auto;
+  box-sizing: border-box;
+}
+
+.github-api-sync-container button {
+  margin: 0.3rem;
+}
+.github-api-sync-container select {
+  margin: 0.3rem;
+}
+
+.github-api-sync-container .github-api-sync-row {
+  padding-top: 0.5rem;
+}
