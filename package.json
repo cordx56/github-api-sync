@@ -18,8 +18,8 @@
   "author": "cordx56 <cordx56@cordx.cx>",
   "license": "MIT",
   "dependencies": {
-    "gitignore-parser": "^0.0.2",
-    "jsdiff": "^1.1.1"
+    "diff": "^8.0.2",
+    "gitignore-parser": "^0.0.2"
   },
   "devDependencies": {
     "@types/node": "^16.11.6",

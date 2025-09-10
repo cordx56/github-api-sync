@@ -374,8 +374,9 @@ export class GitHubClient {
     branch: string,
     path: string,
   ): Promise<Uint8Array> {
+    const p = path.startsWith("/") ? path.slice(1) : path;
     // Use Contents API with raw Accept header to fetch bytes, supports private repos with token
-    const apiPath = `/repos/${owner}/${name}/contents/${encodeURIComponent(path)}`;
+    const apiPath = `/repos/${owner}/${name}/contents/${encodeURIComponent(p)}`;
     const data = await ghRestRaw(this.token, apiPath, { ref: branch });
     return data;
   }
