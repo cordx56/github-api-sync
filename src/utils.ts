@@ -179,7 +179,6 @@ export const normalizePathNFC = (p: string): string => {
   }
 };
 
-
 const timers: Record<string, number> = {};
 export const startTimer = (name: string) => {
   timers[name] = new Date().getTime();

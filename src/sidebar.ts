@@ -62,7 +62,7 @@ export class GithubSyncView extends ItemView {
     return new GitHubClient(this.plugin.settings.githubToken);
   }
 
-  private async populateBranches() {
+  async populateBranches() {
     const sel = this.branchSelectEl!;
     sel.empty();
     const client = this.client();
@@ -84,7 +84,7 @@ export class GithubSyncView extends ItemView {
     sel.addEventListener("change", () => this.populateCommits());
   }
 
-  private async populateCommits() {
+  async populateCommits() {
     if (!this.listEl || !this.branchSelectEl) return;
     const branch = this.branchSelectEl.value;
     const client = this.client();

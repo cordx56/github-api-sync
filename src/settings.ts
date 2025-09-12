@@ -131,7 +131,7 @@ export class GithubApiSyncSettingTab extends PluginSettingTab {
           .onChange(async (value) => {
             const n = Number(value);
             this.plugin.settings.autoSyncMinIntervalMin =
-              Number.isFinite(n) && n > 0 ? Math.floor(n) : 5;
+              Number.isFinite(n) && n > 0 ? n : 5;
             await this.plugin.saveSettings();
             this.plugin.setupAutoSyncHooks();
           }),

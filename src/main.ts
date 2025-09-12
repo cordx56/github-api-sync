@@ -29,6 +29,7 @@ export default class GithubApiSyncPlugin extends Plugin {
   private lastAutoSyncTs = 0;
   private intervalId: number | null = null;
   private onSaveTimerId: number | null = null;
+  private sideView: GithubSyncView | null;
 
   async onload() {
     await this.loadSettings();
@@ -56,10 +57,10 @@ export default class GithubApiSyncPlugin extends Plugin {
     setLogLevel("debug");
 
     // Register sidebar view
-    this.registerView(
-      VIEW_TYPE_GITHUB_SYNC,
-      (leaf: WorkspaceLeaf) => new GithubSyncView(leaf, this),
-    );
+    this.registerView(VIEW_TYPE_GITHUB_SYNC, (leaf: WorkspaceLeaf) => {
+      this.sideView = new GithubSyncView(leaf, this);
+      return this.sideView;
+    });
 
     this.addCommand({
       id: "open-github-api-sync-sidebar",
@@ -81,6 +82,9 @@ export default class GithubApiSyncPlugin extends Plugin {
     });
 
     this.setupAutoSyncHooks();
+    if (this.settings.autoSyncMode !== "disable") {
+      this.syncAll();
+    }
   }
 
   onunload() {}
@@ -209,7 +213,7 @@ export default class GithubApiSyncPlugin extends Plugin {
       logger("info", "merkleDiff:", endTimer("merkleDiff"), "s");
       const summary = `Diff: +${diffs.left.length} ~${diffs.both.length} -${diffs.right.length}`;
       this.setStatus(summary);
-      new Notice(summary, 8000);
+      new Notice(summary);
       logger(
         "info",
         "MerkleDiff",
@@ -246,10 +250,13 @@ export default class GithubApiSyncPlugin extends Plugin {
     const lastSyncedAt = this.settings.lastSyncedAt;
     const currentCommit = this.settings.currentCommit;
     try {
-      const { localOnly, modified, remoteOnly } = await this.getMerkleDiff(ref);
-
       const client = await this.ensureClient();
       const { owner, repo } = this.getOwnerRepo();
+
+      const [{ localOnly, modified, remoteOnly }, headOid] = await Promise.all([
+        this.getMerkleDiff(ref),
+        client.getBranchHeadOid(owner, repo, ref),
+      ]);
 
       this.setStatus("Scan local/remote changes...");
       startTimer("scan");
@@ -276,21 +283,12 @@ export default class GithubApiSyncPlugin extends Plugin {
       } else if (strategy === "push") {
         uploads = [...localOnly, ...modified];
       } else {
-        downloads = [...remoteOnly, ...modified].filter(
-          (v) =>
-            !localChanges?.contains(v) &&
-            !remoteChanges
-              ?.filter((v) => v.action === "removed")
-              .map((v) => v.path)
-              .includes(v),
-        );
-
         removes =
           remoteChanges
             ?.filter(
               (v) => v.action === "removed" && !localChanges?.contains(v.path),
             )
-            .map((v) => v.path) || [];
+            .map((v) => v.path) ?? [];
 
         uploads = [...localOnly, ...modified].filter(
           (v) => !remoteChanges?.map((v) => v.path).contains(v),
@@ -305,6 +303,10 @@ export default class GithubApiSyncPlugin extends Plugin {
           ];
         }
 
+        downloads = [...remoteOnly, ...modified].filter(
+          (v) => !localChanges?.contains(v) && !uploads.includes(v),
+        );
+
         conflicts =
           remoteChanges
             ?.map((v) => v.path)
@@ -314,9 +316,11 @@ export default class GithubApiSyncPlugin extends Plugin {
       downloads = await this.ignoreManager().ignoreFilter(downloads);
       uploads = await this.ignoreManager().ignoreFilter(uploads);
       removes = await this.ignoreManager().ignoreFilter(removes);
+      conflicts = await this.ignoreManager().ignoreFilter(conflicts);
       logger("debug", "downloads: ", downloads);
       logger("debug", "uploads: ", uploads);
       logger("debug", "removes: ", removes);
+      logger("debug", "conflicts: ", conflicts);
       logger("info", "delta:", endTimer("delta"), "s");
 
       startTimer("sync");
@@ -412,6 +416,7 @@ export default class GithubApiSyncPlugin extends Plugin {
       };
 
       await Promise.all(tasks);
+      this.settings.currentCommit = headOid;
       logger("info", "sync:", endTimer("sync"), "s");
       if (0 < additions.length || 0 < deletions.length) {
         startTimer("upload");
@@ -431,6 +436,7 @@ export default class GithubApiSyncPlugin extends Plugin {
         );
         this.settings.currentCommit = newOid;
         logger("info", "upload:", endTimer("upload"), "s");
+        this.sideView?.populateCommits();
       }
       this.settings.lastSyncedAt = new Date().toISOString();
       await this.saveSettings();
@@ -493,7 +499,6 @@ export default class GithubApiSyncPlugin extends Plugin {
         // Wait 3 seconds after the last change; if no more changes, attempt sync
         this.onSaveTimerId = window.setTimeout(async () => {
           this.onSaveTimerId = null;
-          if (Date.now() - this.lastAutoSyncTs < minMs) return;
           await this.syncAll();
         }, 3000);
       };
