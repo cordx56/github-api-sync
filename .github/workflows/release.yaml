@@ -13,16 +13,18 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
       - name: Use Node.js
         uses: actions/setup-node@v5
         with:
           node-version: "24.x"
 
-      - name: Install dependencies
-        uses: pnpm/action-setup@v4
-
       - name: Build plugin
-        run: pnpm run build
+        run: |
+          pnpm install
+          pnpm run build
 
       - name: Create release
         env:
