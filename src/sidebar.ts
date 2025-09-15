@@ -1,6 +1,7 @@
 import { ItemView, Notice, WorkspaceLeaf } from "obsidian";
 import GithubApiSyncPlugin from "./main";
 import { GitHubClient } from "./github";
+import { AutoSyncMode, AutoSyncModeValues } from "./types";
 
 export const VIEW_TYPE_GITHUB_SYNC = "github-api-sync-sidebar";
 
@@ -23,7 +24,7 @@ export class GithubSyncView extends ItemView {
   }
 
   getDisplayText(): string {
-    return "GitHub Sync";
+    return "GitHub API Sync";
   }
 
   async onOpen() {
@@ -32,19 +33,59 @@ export class GithubSyncView extends ItemView {
     container.classList.add("github-api-sync-container");
 
     const controls = container.createDiv({ cls: "github-api-sync-controls" });
-    const branchLabel = controls.createEl("label", { text: "Branch:" });
-    this.branchSelectEl = controls.createEl("select");
-    const refreshBtn = controls.createEl("button", { text: "Refresh" });
-    refreshBtn.addEventListener("click", () => this.refresh());
+
+    const syncSelect = controls
+      .createDiv({ cls: "github-api-sync-sync-mode" })
+      .createEl("label", { text: "Auto sync: " })
+      .createEl("select", { cls: "github-api-sync-sync-select" });
+    for (const value of AutoSyncModeValues) {
+      const select = syncSelect.createEl("option", { text: value, value });
+      select.selected = this.plugin.settings.autoSyncMode === value;
+    }
+    syncSelect.addEventListener("change", async (v: any) => {
+      if (v.target?.value) {
+        this.plugin.settings.autoSyncMode = v.target.value as AutoSyncMode;
+        await this.plugin.saveSettings();
+      }
+    });
+
+    const commitEl = container.createDiv({ cls: "github-api-sync-commit" });
+    const commitMessageEl = commitEl.createEl("textarea", {
+      cls: "github-api-sync-commit-message",
+    });
+    commitEl
+      .createEl("button", {
+        cls: "github-api-sync-commit-button",
+        text: "Commit & Push",
+      })
+      .addEventListener("click", async () => {
+        const message = commitMessageEl.value;
+        await this.commitAll(message);
+        commitMessageEl.setText("");
+      });
+
+    const branch = container.createDiv({ cls: "github-api-sync-branch" });
+    this.branchSelectEl = branch
+      .createEl("label", { text: "Branch: " })
+      .createEl("select");
+    this.branchSelectEl.addEventListener("change", () =>
+      this.populateCommits(),
+    );
+    branch
+      .createEl("button", { text: "Refresh" })
+      .addEventListener("click", () => this.refresh());
 
     this.actionsEl = container.createDiv({ cls: "github-api-sync-actions" });
-    const checkoutBtn = this.actionsEl.createEl("button", { text: "Checkout" });
+    this.actionsEl
+      .createEl("button", { text: "Checkout" })
+      .addEventListener("click", () => this.checkoutSelected());
+
+    /* not checked
     const revertBtn = this.actionsEl.createEl("button", { text: "Revert" });
     const squashBtn = this.actionsEl.createEl("button", { text: "Squash" });
-
-    checkoutBtn.addEventListener("click", () => this.checkoutSelected());
     revertBtn.addEventListener("click", () => this.revertSelected());
     squashBtn.addEventListener("click", () => this.squashSelected());
+    */
 
     this.listEl = container.createDiv({ cls: "github-api-sync-list" });
 
@@ -60,6 +101,21 @@ export class GithubSyncView extends ItemView {
     if (!this.plugin.settings.githubToken)
       throw new Error("GitHub token not set");
     return new GitHubClient(this.plugin.settings.githubToken);
+  }
+
+  reloadConfig() {
+    const syncMode = document
+      .getElementsByClassName("github-api-sync-sync-mode")
+      .item(0);
+    if (syncMode) {
+      for (const opt of Array.from(syncMode.getElementsByTagName("option"))) {
+        if (this.plugin.settings.autoSyncMode === opt.value) {
+          opt.selected = true;
+        } else {
+          opt.selected = false;
+        }
+      }
+    }
   }
 
   async populateBranches() {
@@ -137,16 +193,29 @@ export class GithubSyncView extends ItemView {
   }
 
   private async refresh() {
-    await this.populateBranches();
-    await this.populateCommits();
+    await Promise.all([this.populateBranches(), this.populateCommits()]);
+  }
+
+  private async commitAll(message: string) {
+    if (message.length === 0) {
+      new Notice("Specify commit message");
+      return;
+    }
+    await this.plugin.checkout({
+      branch: this.branchSelectEl!.value,
+      strategy: "push",
+      message,
+    });
   }
 
   private async checkoutSelected() {
+    this.plugin.settings.autoSyncMode = "disable";
+    await this.plugin.saveSettings();
     if (this.selected.size !== 1) return;
     const sha = Array.from(this.selected)[0];
-    const ref = this.branchSelectEl!.value;
     try {
-      await this.plugin.checkout(ref, "pull");
+      this.plugin.settings.autoSyncMode = "disable";
+      await this.plugin.checkout({ sha, strategy: "pull" });
       new Notice(`Checked out ${sha.substring(0, 7)}`);
       await this.populateCommits();
     } catch (e: any) {
@@ -154,6 +223,7 @@ export class GithubSyncView extends ItemView {
     }
   }
 
+  // not checked
   private async revertSelected() {
     if (this.selected.size !== 1) return;
     const sha = Array.from(this.selected)[0];
@@ -173,6 +243,7 @@ export class GithubSyncView extends ItemView {
     }
   }
 
+  // not checked
   private async squashSelected() {
     if (this.selected.size < 2) return;
     const selectedOrder = this.commits.filter((c) => this.selected.has(c.sha));

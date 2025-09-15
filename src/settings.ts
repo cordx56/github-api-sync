@@ -1,6 +1,6 @@
 import { App, PluginSettingTab, Setting } from "obsidian";
 import GithubApiSyncPlugin from "./main";
-import { OperationMode, AutoSyncMode } from "./types";
+import { OperationMode, AutoSyncMode, PluginSettings } from "./types";
 
 export class GithubApiSyncSettingTab extends PluginSettingTab {
   plugin: GithubApiSyncPlugin;
@@ -32,15 +32,16 @@ export class GithubApiSyncSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("GitHub Token (PAT)")
       .setDesc("Stored locally in Obsidian's plugin data.")
-      .addText((text) =>
+      .addText((text) => {
         text
-          .setPlaceholder("ghp_...")
+          .setPlaceholder("github_pat_...")
           .setValue(this.plugin.settings.githubToken)
           .onChange(async (value) => {
             this.plugin.settings.githubToken = value.trim();
             await this.plugin.saveSettings();
-          }),
-      );
+          });
+        text.inputEl.type = "password";
+      });
 
     new Setting(containerEl)
       .setName("Repository Path")
@@ -51,19 +52,6 @@ export class GithubApiSyncSettingTab extends PluginSettingTab {
           .setValue(this.plugin.settings.repositoryPath)
           .onChange(async (value) => {
             this.plugin.settings.repositoryPath = value.trim();
-            await this.plugin.saveSettings();
-          }),
-      );
-
-    new Setting(containerEl)
-      .setName("Branch")
-      .setDesc("Branch to synchronize (default branch if blank)")
-      .addText((text) =>
-        text
-          .setPlaceholder("main")
-          .setValue(this.plugin.settings.targetBranch)
-          .onChange(async (value) => {
-            this.plugin.settings.targetBranch = value.trim();
             await this.plugin.saveSettings();
           }),
       );
@@ -83,12 +71,34 @@ export class GithubApiSyncSettingTab extends PluginSettingTab {
           }),
       );
 
-    const repoDisplay =
-      this.plugin.settings.repositoryPath ||
-      `${this.plugin.settings.githubUsername}/${this.app.vault.getName()}`;
     new Setting(containerEl)
-      .setName("Target Repository")
-      .setDesc(`Using: "${repoDisplay}" (default branch auto-detected).`);
+      .setName("Sync Target File Type")
+      .setDesc("Target file types to sync")
+      .addDropdown((dd) => {
+        dd.addOption("normal", "Normal");
+        dd.addOption("includeConfig", "Include config files");
+        dd.addOption("includeHidden", "Include all hidden files");
+        dd.setValue(this.plugin.settings.targetFileType);
+        dd.onChange(async (value: PluginSettings["targetFileType"]) => {
+          this.plugin.settings.targetFileType = value;
+          await this.plugin.saveSettings();
+        });
+      });
+
+    containerEl.createEl("h3", { text: "Auto Sync" });
+
+    new Setting(containerEl)
+      .setName("Branch")
+      .setDesc("Branch to synchronize (default branch if blank)")
+      .addText((text) =>
+        text
+          .setPlaceholder("main")
+          .setValue(this.plugin.settings.targetBranch)
+          .onChange(async (value) => {
+            this.plugin.settings.targetBranch = value.trim();
+            await this.plugin.saveSettings();
+          }),
+      );
 
     new Setting(containerEl)
       .setName("Allowed Operation")
@@ -103,8 +113,6 @@ export class GithubApiSyncSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         });
       });
-
-    containerEl.createEl("h3", { text: "Auto Sync" });
 
     new Setting(containerEl)
       .setName("Auto Sync Mode")
@@ -136,5 +144,23 @@ export class GithubApiSyncSettingTab extends PluginSettingTab {
             this.plugin.setupAutoSyncHooks();
           }),
       );
+
+    containerEl.createEl("h3", { text: "Miscellaneous" });
+
+    new Setting(containerEl)
+      .setName("Log Level")
+      .setDesc("You can view the logs in Developer Tools")
+      .addDropdown((dd) => {
+        dd.addOption("none", "None");
+        dd.addOption("error", "Error");
+        dd.addOption("warn", "Warning");
+        dd.addOption("info", "Information");
+        dd.addOption("debug", "debug");
+        dd.setValue(this.plugin.settings.logLevel ?? "none");
+        dd.onChange(async (value: PluginSettings["logLevel"]) => {
+          this.plugin.settings.logLevel = value;
+          await this.plugin.saveSettings();
+        });
+      });
   }
 }

@@ -1,11 +1,11 @@
 import { Notice, Plugin, WorkspaceLeaf } from "obsidian";
-import { GitHubClient } from "./github";
+import { GitHubClient, TreeData } from "./github";
 import { GithubApiSyncSettingTab } from "./settings";
 import {
   PluginSettings,
   DEFAULT_SETTINGS,
   OperationMode,
-  FileChangeOp,
+  FileInfo,
 } from "./types";
 import {
   startTimer,
@@ -24,6 +24,7 @@ export default class GithubApiSyncPlugin extends Plugin {
   settings: PluginSettings;
   private client?: GitHubClient;
   private statusEl?: HTMLElement;
+  private statusTimerId: number | null;
   private ignoreMgr?: IgnoreManager;
   private syncInProgress = false;
   private lastAutoSyncTs = 0;
@@ -54,7 +55,7 @@ export default class GithubApiSyncPlugin extends Plugin {
       },
     });
 
-    setLogLevel("debug");
+    setLogLevel(this.settings.logLevel);
 
     // Register sidebar view
     this.registerView(VIEW_TYPE_GITHUB_SYNC, (leaf: WorkspaceLeaf) => {
@@ -104,6 +105,12 @@ export default class GithubApiSyncPlugin extends Plugin {
       this.client = undefined;
     }
     this.setupAutoSyncHooks();
+    this.sideView?.reloadConfig();
+    setLogLevel(this.settings.logLevel);
+  }
+
+  maxSizeBytes() {
+    return this.settings.maxFileSizeMB * 1024 * 1024;
   }
 
   ignoreManager(): IgnoreManager {
@@ -158,20 +165,51 @@ export default class GithubApiSyncPlugin extends Plugin {
     }
   }
 
-  private async getMerkleDiff(ref: string): Promise<{
+  private remoteFilesCache = new Map<string, TreeData[]>();
+  async getRemoteFilesAt(
+    owner: string,
+    repo: string,
+    ref: string,
+  ): Promise<TreeData[]> {
+    const client = await this.ensureClient();
+    const cache = this.remoteFilesCache.get(ref);
+    if (cache) {
+      return cache;
+    }
+    const data = await client.getAllFilesAt(owner, repo, ref);
+    const filtered =
+      this.settings.targetFileType !== "includeHidden"
+        ? data.filter(
+            (v) =>
+              !v.path.split("/").find((w) => w.startsWith(".")) ||
+              (this.settings.targetFileType === "includeConfig" &&
+                v.path.startsWith(".obsidian")),
+          )
+        : data;
+    this.remoteFilesCache.set(ref, filtered);
+    window.setTimeout(() => {
+      this.remoteFilesCache.delete(ref);
+    }, 3000);
+    return filtered;
+  }
+
+  async getMerkleDiff(ref: string): Promise<{
     localOnly: string[];
     modified: string[];
     remoteOnly: string[];
   }> {
     try {
-      const client = await this.ensureClient();
       this.setStatus("Building Merkle trees...");
       startTimer("merkleDiff");
       const { owner, repo } = this.getOwnerRepo();
 
       const getLocalTree = async () => {
         startTimer("buildLocalTree");
-        const localFiles = await this.listAllLocalFiles();
+        const localFiles = (
+          await this.listAllLocalFiles({
+            include: this.settings.targetFileType,
+          })
+        ).map((v) => v.path);
         const tree = await MerkleTreeBuilder.buildTree(
           await this.ignoreManager().ignoreFilter(
             localFiles.map(normalizePathNFC),
@@ -186,7 +224,7 @@ export default class GithubApiSyncPlugin extends Plugin {
       };
       const getRemoteTree = async () => {
         startTimer("buildRemoteTree");
-        const remoteFiles = (await client.getAllFilesAt(owner, repo, ref)).map(
+        const remoteFiles = (await this.getRemoteFilesAt(owner, repo, ref)).map(
           (v) => ({ ...v, path: normalizePathNFC(v.path) }),
         );
         const remoteShas = new Map<string, string>(
@@ -211,11 +249,10 @@ export default class GithubApiSyncPlugin extends Plugin {
 
       const diffs = MerkleDiff.findDifferences(localTree, remoteTree);
       logger("info", "merkleDiff:", endTimer("merkleDiff"), "s");
-      const summary = `Diff: +${diffs.left.length} ~${diffs.both.length} -${diffs.right.length}`;
+      const summary = `GitHub diff: +${diffs.left.length} ~${diffs.both.length} -${diffs.right.length}`;
       this.setStatus(summary);
-      new Notice(summary);
       logger(
-        "info",
+        "debug",
         "MerkleDiff",
         "local:",
         diffs.left,
@@ -231,37 +268,51 @@ export default class GithubApiSyncPlugin extends Plugin {
       };
     } catch (e: any) {
       const msg = e?.message || String(e);
-      this.setStatus(`Merkle diff failed: ${msg}`);
       throw new Error(`Merkle diff failed: ${msg}`);
     }
   }
 
   async syncAll() {
     const { owner, repo } = this.getOwnerRepo();
-    const { targetBranch, headOid } = await this.getTargetBranch(owner, repo);
-    this.checkout(targetBranch, this.settings.operationMode);
+    const { targetBranch } = await this.getTargetBranch(owner, repo);
+    this.checkout({
+      branch: targetBranch,
+      strategy: this.settings.operationMode,
+    });
   }
 
-  async checkout(ref: string, strategy: OperationMode) {
+  async checkout(
+    params: { strategy: OperationMode; message?: string } & (
+      | { sha: string }
+      | { branch: string }
+    ),
+  ) {
+    startTimer("checkout");
+    const { strategy, message } = params;
+    const ref = "sha" in params ? params.sha : params.branch;
+
     if (this.syncInProgress) {
       return;
     }
     this.syncInProgress = true;
+
     const lastSyncedAt = this.settings.lastSyncedAt;
     const currentCommit = this.settings.currentCommit;
+
     try {
       const client = await this.ensureClient();
       const { owner, repo } = this.getOwnerRepo();
 
-      const [{ localOnly, modified, remoteOnly }, headOid] = await Promise.all([
-        this.getMerkleDiff(ref),
-        client.getBranchHeadOid(owner, repo, ref),
-      ]);
+      const { localOnly, modified, remoteOnly } = await this.getMerkleDiff(ref);
 
       this.setStatus("Scan local/remote changes...");
       startTimer("scan");
       const [localChanges, remoteChanges] = await Promise.all([
-        lastSyncedAt ? this.scanLocalUpdatedSince(lastSyncedAt) : null,
+        lastSyncedAt
+          ? this.scanLocalUpdatedSince(lastSyncedAt).then((v) =>
+              v.map((w) => w.path),
+            )
+          : null,
         currentCommit
           ? client.getFileChangesSince(owner, repo, currentCommit, ref)
           : null,
@@ -313,10 +364,19 @@ export default class GithubApiSyncPlugin extends Plugin {
             .filter((v) => localChanges?.includes(v)) ?? [];
       }
 
-      downloads = await this.ignoreManager().ignoreFilter(downloads);
+      const filterRemoteSize = async (path: string): Promise<boolean> => {
+        const remoteFiles = await this.getRemoteFilesAt(owner, repo, ref);
+        const size = remoteFiles.find((v) => path === v.path)?.size || 0;
+        return size <= this.maxSizeBytes();
+      };
+      downloads = (await this.ignoreManager().ignoreFilter(downloads)).filter(
+        (v) => filterRemoteSize(v),
+      );
       uploads = await this.ignoreManager().ignoreFilter(uploads);
       removes = await this.ignoreManager().ignoreFilter(removes);
-      conflicts = await this.ignoreManager().ignoreFilter(conflicts);
+      conflicts = (await this.ignoreManager().ignoreFilter(conflicts)).filter(
+        (v) => filterRemoteSize(v),
+      );
       logger("debug", "downloads: ", downloads);
       logger("debug", "uploads: ", uploads);
       logger("debug", "removes: ", removes);
@@ -325,18 +385,17 @@ export default class GithubApiSyncPlugin extends Plugin {
 
       startTimer("sync");
       this.setStatus("Syncing...");
-
-      const maxBytes = this.settings.maxFileSizeMB * 1024 * 1024;
-      const additions: { path: string; contents: string }[] = [];
-      const deletions: { path: string }[] = [];
+      const conflictTime = Math.floor(new Date().getTime() / 1000).toString();
       let tasks = [];
-
       let progress = 0;
-      let incrementProgress = () => {};
+      const incrementProgress = () => {
+        progress += 1;
+        this.setStatus(`Syncing: ${progress}/${tasks.length}`);
+      };
       tasks = [
         ...downloads.map(async (path) => {
           const data = await client.getFileRawAtRef(owner, repo, ref, path);
-          if (data.byteLength > maxBytes) {
+          if (data.byteLength > this.maxSizeBytes()) {
             incrementProgress();
             return;
           }
@@ -347,60 +406,72 @@ export default class GithubApiSyncPlugin extends Plugin {
           );
           incrementProgress();
         }),
-        ...uploads.map(async (path) => {
-          const stat = await this.app.vault.adapter.stat(path);
-          if (stat) {
-            if (stat.size <= maxBytes) {
-              const bin = await this.app.vault.adapter.readBinary(path);
-              const u8 =
-                bin instanceof Uint8Array
-                  ? bin
-                  : new Uint8Array(bin as ArrayBuffer);
-              const contents = encodeBase64(u8);
-              additions.push({ path, contents });
-            }
-          } else {
-            deletions.push({ path });
-          }
-          incrementProgress();
-        }),
         ...removes.map(async (path) => {
           await this.app.vault.adapter.remove(path);
         }),
         ...conflicts.map(async (path) => {
+          const saveConflict = async (remote: Uint8Array) => {
+            const pathSplit = path.split("/");
+            const basename = pathSplit.last()!;
+            const split = basename.split(".");
+            const filename =
+              split.length === 1
+                ? `${split[0]}.conflict-${conflictTime}`
+                : `${split.slice(0, -1).join(".")}.conflict-${conflictTime}.${split.last()}`;
+            const newPath = [...pathSplit.slice(0, -1), filename].join("/");
+            await this.ensureFolder(newPath);
+            await this.app.vault.adapter.writeBinary(newPath, remote);
+          };
           if (!currentCommit) {
             return;
           }
           const stat = await this.app.vault.adapter.stat(path);
-          if (!stat || maxBytes < stat.size) {
+          if (!stat || this.maxSizeBytes() < stat.size) {
             return;
           }
           const bin = await this.app.vault.adapter.readBinary(path);
-          const content = new TextDecoder().decode(bin);
+          let content;
+          try {
+            content = new TextDecoder().decode(bin);
+          } catch (_e) {
+            return;
+          }
           const baseContent = await client.getFileRawAtRef(
             owner,
             repo,
             currentCommit,
             path,
           );
-          if (baseContent.byteLength > maxBytes) {
+          if (baseContent.byteLength > this.maxSizeBytes()) {
             incrementProgress();
             return;
           }
-          const baseText = new TextDecoder().decode(baseContent);
+          let baseText;
+          try {
+            baseText = new TextDecoder().decode(baseContent);
+          } catch (_e) {
+            return;
+          }
           const refContent = await client.getFileRawAtRef(
             owner,
             repo,
             ref,
             path,
           );
-          if (refContent.byteLength > maxBytes) {
+          if (refContent.byteLength > this.maxSizeBytes()) {
             incrementProgress();
             return;
           }
-          const refText = new TextDecoder().decode(refContent);
+          let refText;
+          try {
+            refText = new TextDecoder().decode(refContent);
+          } catch (_e) {
+            await saveConflict(refContent);
+            return;
+          }
           const merged = threeWayMerge(baseText, content, refText);
           if (!merged) {
+            await saveConflict(refContent);
             return;
           }
           await this.ensureFolder(path);
@@ -410,49 +481,94 @@ export default class GithubApiSyncPlugin extends Plugin {
           );
         }),
       ];
-      incrementProgress = () => {
-        progress += 1;
-        this.setStatus(`Syncing: ${progress}/${tasks.length}`);
-      };
+      if ("branch" in params && strategy !== "pull") {
+        const headOid = await client.getBranchHeadOid(
+          owner,
+          repo,
+          params.branch,
+        );
+        this.settings.currentCommit = headOid;
+        tasks.push(
+          this.commitFiles(
+            owner,
+            repo,
+            params.branch,
+            headOid,
+            uploads,
+            message ??
+              `Obsidian sync: ${uploads.length} change(s) at ${new Date().toISOString()}`,
+          ),
+        );
+      } else if ("sha" in params) {
+        this.settings.currentCommit = params.sha;
+      }
 
       await Promise.all(tasks);
-      this.settings.currentCommit = headOid;
+      this.sideView?.populateCommits();
+
       logger("info", "sync:", endTimer("sync"), "s");
-      if (0 < additions.length || 0 < deletions.length) {
-        startTimer("upload");
-        this.setStatus("Uploading...");
-        const { targetBranch, headOid } = await this.getTargetBranch(
-          owner,
-          repo,
-        );
-        const newOid = await client.createCommitOnBranch(
-          owner,
-          repo,
-          targetBranch,
-          headOid,
-          additions,
-          deletions,
-          `Obsidian sync: ${additions.length + deletions.length} change(s) at ${new Date().toISOString()}`,
-        );
-        this.settings.currentCommit = newOid;
-        logger("info", "upload:", endTimer("upload"), "s");
-        this.sideView?.populateCommits();
-      }
       this.settings.lastSyncedAt = new Date().toISOString();
       await this.saveSettings();
 
-      new Notice(
-        `GitHub API Sync: ↓${downloads.length} ↑${uploads.length} -${removes.length}`,
+      this.setStatus(
+        `GitHub: ↓${downloads.length} ↑${uploads.length} -${removes.length}`,
       );
     } catch (e: any) {
       console.error(e);
-      new Notice(`GitHub API Sync failed: ${e?.message ?? e}`);
-      this.setStatus("Idle");
+      new Notice(`GitHub Sync failed: ${e?.message ?? e}`);
+      this.setStatus("GitHub: failed");
     } finally {
       this.syncInProgress = false;
       this.lastAutoSyncTs = Date.now();
-      this.setStatus("");
+      logger("info", "checkout:", endTimer("checkout"), "s");
     }
+  }
+
+  async commitFiles(
+    owner: string,
+    repo: string,
+    branch: string,
+    headOid: string,
+    paths: string[],
+    message: string,
+  ) {
+    if (paths.length === 0) {
+      return;
+    }
+    const additions: { path: string; contents: string }[] = [];
+    const deletions: { path: string }[] = [];
+    for (const path of paths) {
+      const stat = await this.app.vault.adapter.stat(path);
+      if (stat) {
+        if (stat.size <= this.maxSizeBytes()) {
+          const bin = await this.app.vault.adapter.readBinary(path);
+          const u8 =
+            bin instanceof Uint8Array
+              ? bin
+              : new Uint8Array(bin as ArrayBuffer);
+          const contents = encodeBase64(u8);
+          additions.push({ path, contents });
+        }
+      } else {
+        deletions.push({ path });
+      }
+    }
+
+    const client = await this.ensureClient();
+    startTimer("push");
+    const newOid = await client.createCommitOnBranch(
+      owner,
+      repo,
+      branch,
+      headOid,
+      additions,
+      deletions,
+      message,
+    );
+    logger("info", "push:", endTimer("push"), "s");
+    this.settings.currentCommit = newOid;
+    await this.saveSettings();
+    this.sideView?.populateCommits();
   }
 
   async activateView() {
@@ -521,52 +637,108 @@ export default class GithubApiSyncPlugin extends Plugin {
     }
   }
 
-  async listAllLocalFiles(): Promise<string[]> {
-    const out: string[] = [];
-    const walk = async (folder: string) => {
+  private localFileListCache: FileInfo[] | null = null;
+  async listAllLocalFiles(opt?: {
+    root?: string;
+    include?: "normal" | "includeConfig" | "includeHidden";
+  }): Promise<FileInfo[]> {
+    if (this.localFileListCache !== null) {
+      return this.localFileListCache;
+    }
+
+    this.localFileListCache = [];
+    const walk = async (folder: string): Promise<FileInfo[]> => {
+      let output: FileInfo[] = [];
       const { files, folders } = await this.app.vault.adapter.list(folder);
-      for (const f of files) {
+      for (const path of files) {
+        const stat = await this.app.vault.adapter.stat(path);
         // adapter.list returns absolute-like paths from root without leading slash
-        out.push(f);
+        if (stat) {
+          output.push({ path, stat });
+        }
       }
       for (const d of folders) {
-        await walk(d);
+        output = [...output, ...(await walk(d))];
       }
+      return output;
     };
-    await walk("");
-    return out;
+
+    if (opt?.include === "includeHidden") {
+      this.localFileListCache = await walk(opt?.root ?? "");
+    } else {
+      const data = this.app.vault.getFiles();
+      this.localFileListCache = data.map((v) => ({
+        path: v.path,
+        stat: v.stat,
+      }));
+      if (opt?.include === "includeConfig") {
+        this.localFileListCache = [
+          ...this.localFileListCache,
+          ...(await walk(".obsidian")),
+        ];
+      }
+    }
+    window.setTimeout(() => {
+      this.localFileListCache = null;
+    }, 3000);
+    return this.localFileListCache;
   }
 
   async scanLocalUpdatedSince(
     sinceISO: string | Date | null,
-  ): Promise<string[]> {
-    const files = await this.listAllLocalFiles();
-    const updated: string[] = [];
+  ): Promise<FileInfo[]> {
+    const files = await this.listAllLocalFiles({
+      include: this.settings.targetFileType,
+    });
+    const updated: FileInfo[] = [];
     const since =
       typeof sinceISO === "string"
         ? new Date(sinceISO).getTime()
         : sinceISO?.getTime() || 0;
     let processed = 0;
-    for (const p of files) {
-      if (await this.ignoreManager().isIgnored(p)) {
+    for (const file of files) {
+      if (await this.ignoreManager().isIgnored(file.path)) {
         processed += 1;
         continue;
       }
-      const st = await this.app.vault.adapter.stat(p);
-      if (!st) {
-        processed += 1;
-        continue;
-      }
-      if (since < st.mtime) updated.push(p);
+      if (since < file.stat.mtime) updated.push(file);
       processed += 1;
       this.setStatus(`Scan ${processed}/${files.length}`);
     }
     return updated;
   }
 
-  private setStatus(text: string) {
+  setStatus(text: string, timer?: number) {
     try {
+      if (this.statusTimerId !== null) {
+        clearTimeout(this.statusTimerId);
+        this.statusTimerId = null;
+      }
       this.statusEl?.setText(text);
+      this.statusTimerId = window.setTimeout(() => {
+        const lastSyncedAt = this.settings.lastSyncedAt
+          ? new Date(this.settings.lastSyncedAt)
+          : null;
+        if (lastSyncedAt === null) {
+          this.statusEl?.setText("GitHub: never synced");
+          return;
+        }
+        const dur = Math.floor(
+          (new Date().getTime() - lastSyncedAt.getTime()) / 1000,
+        );
+        const days = Math.floor(dur / (60 * 60 * 24));
+        const hours = Math.floor(dur / (60 * 60));
+        const mins = Math.floor(dur / 60);
+        if (0 < days) {
+          this.setStatus(`GitHub: synced ${days}d ago`);
+        } else if (0 < hours) {
+          this.setStatus(`GitHub: synced ${hours}h ago`);
+        } else if (0 < mins) {
+          this.setStatus(`GitHub: synced ${mins}m ago`);
+        } else {
+          this.setStatus(`GitHub: synced ${dur}s ago`);
+        }
+      }, timer ?? 5000);
     } catch {
       // ignore rendering failures
     }

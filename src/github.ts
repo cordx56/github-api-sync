@@ -1,6 +1,14 @@
 import { FileChangeOp } from "./types";
 import { ghGraphql, ghRest, ghRestRaw, encodeBase64 } from "./utils";
 
+export type TreeData = {
+  path: string;
+  type: "blob" | "tree";
+  sha: string;
+  size: number;
+  url: string;
+};
+
 export class GitHubClient {
   private token: string;
   constructor(token: string) {
@@ -29,12 +37,12 @@ export class GitHubClient {
     branch: string,
     perPage = 50,
   ): Promise<
-    Array<{
+    {
       sha: string;
       message: string;
       author?: { name?: string };
       htmlUrl: string;
-    }>
+    }[]
   > {
     const commits = await ghRest<any[]>(
       this.token,
@@ -96,13 +104,7 @@ export class GitHubClient {
 
   async getAllFilesAt(owner: string, name: string, ref: string) {
     const resp = await ghRest<{
-      tree: {
-        path: string;
-        type: "blob" | "tree";
-        sha: string;
-        size: number;
-        url: string;
-      }[];
+      tree: TreeData[];
     }>(
       this.token,
       "GET",
@@ -183,6 +185,7 @@ export class GitHubClient {
     return oid;
   }
 
+  // not checked
   async squashRangeToSingleCommit(
     owner: string,
     name: string,

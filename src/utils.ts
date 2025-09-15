@@ -195,10 +195,11 @@ const logClass = {
   info: 30,
   warn: 20,
   error: 10,
+  none: 0,
 };
 let logLevel: number = 0;
 export const setLogLevel = (
-  level: "debug" | "info" | "warn" | "error" | null,
+  level: "debug" | "info" | "warn" | "error" | "none",
 ) => {
   logLevel = level ? logClass[level] : 0;
 };

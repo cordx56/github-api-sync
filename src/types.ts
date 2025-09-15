@@ -1,3 +1,5 @@
+import { FileStats, Stat } from "obsidian";
+
 export interface PluginSettings {
   githubUsername: string;
   githubToken: string;
@@ -10,6 +12,8 @@ export interface PluginSettings {
   operationMode: OperationMode;
   autoSyncMode: AutoSyncMode;
   autoSyncMinIntervalMin: number;
+  targetFileType: "normal" | "includeConfig" | "includeHidden";
+  logLevel: "debug" | "info" | "warn" | "error" | "none";
 }
 
 export const DEFAULT_SETTINGS: PluginSettings = {
@@ -22,6 +26,13 @@ export const DEFAULT_SETTINGS: PluginSettings = {
   operationMode: "pull",
   autoSyncMode: "disable",
   autoSyncMinIntervalMin: 5,
+  targetFileType: "normal",
+  logLevel: "none",
+};
+
+export type FileInfo = {
+  path: string;
+  stat: Stat | FileStats;
 };
 
 export interface FileChangeOp {
@@ -29,6 +40,8 @@ export interface FileChangeOp {
   action: "added" | "modified" | "removed";
 }
 
-export type OperationMode = "pull" | "push" | "bidirectional";
+export const OperationModeValues = ["pull", "push", "bidirectional"] as const;
+export type OperationMode = (typeof OperationModeValues)[number];
 
-export type AutoSyncMode = "disable" | "interval" | "onsave";
+export const AutoSyncModeValues = ["disable", "interval", "onsave"] as const;
+export type AutoSyncMode = (typeof AutoSyncModeValues)[number];
