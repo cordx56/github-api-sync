@@ -48,7 +48,7 @@ export default class GithubApiSyncPlugin extends Plugin {
     });
 
     this.addCommand({
-      id: "github-api-sync-now",
+      id: "sync-now",
       name: "Sync with GitHub",
       callback: async () => {
         await this.syncAll();
@@ -64,7 +64,7 @@ export default class GithubApiSyncPlugin extends Plugin {
     });
 
     this.addCommand({
-      id: "open-github-api-sync-sidebar",
+      id: "open-sidebar",
       name: "Open GitHub Sync Sidebar",
       callback: async () => {
         await this.activateView();
