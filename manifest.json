@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "minAppVersion": "0.15.0",
   "description": "Syncing vault using GitHub API",
-  "author": "cordx56 <cordx56@cordx.cx>",
+  "author": "cordx56",
   "authorUrl": "https://x56.cx",
   "fundingUrl": "https://github.com/sponsors/cordx56",
   "isDesktopOnly": false
