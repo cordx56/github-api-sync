@@ -22,9 +22,11 @@ export class GithubSyncView extends ItemView {
   getViewType(): string {
     return VIEW_TYPE_GITHUB_SYNC;
   }
-
   getDisplayText(): string {
     return "GitHub API Sync";
+  }
+  getIcon(): string {
+    return "git-branch";
   }
 
   async onOpen() {

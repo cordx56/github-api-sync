@@ -71,17 +71,6 @@ export default class GithubApiSyncPlugin extends Plugin {
       },
     });
 
-    // Experimental: compute Merkle diff between local vault and remote repo
-    this.addCommand({
-      id: "github-api-sync-merkle-diff",
-      name: "Show Diff",
-      callback: async () => {
-        const { owner, repo } = this.getOwnerRepo();
-        const { targetBranch } = await this.getTargetBranch(owner, repo);
-        await this.getMerkleDiff(targetBranch);
-      },
-    });
-
     this.setupAutoSyncHooks();
     if (this.settings.autoSyncMode !== "disable") {
       this.syncAll();
