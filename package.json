@@ -17,6 +17,7 @@
   ],
   "author": "cordx56 <cordx56@cordx.cx>",
   "license": "MIT",
+  "packageManager": "pnpm@10.7.1",
   "dependencies": {
     "diff": "^8.0.2",
     "gitignore-parser": "^0.0.2"
