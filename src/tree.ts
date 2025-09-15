@@ -1,6 +1,5 @@
 import type { DataAdapter } from "obsidian";
 import { GitHubClient } from "./github";
-import { IgnoreManager } from "./utils";
 
 export type MerkleGenericNode<C> = {
   path: string;
@@ -23,8 +22,6 @@ export interface LocalConfig {
   adapter: DataAdapter;
   /** Root prefix within the vault (optional). Use "" for full vault. */
   root?: string;
-  /** Ignore predicate; return true to ignore a path (vault‑relative). */
-  isIgnored?: (path: string) => Promise<boolean> | boolean;
 }
 
 export interface RemoteConfig {
@@ -32,26 +29,9 @@ export interface RemoteConfig {
   owner: string;
   repo: string;
   ref: string;
-  /** Ignore predicate for remote paths (repo‑relative). */
-  isIgnored?: (path: string) => Promise<boolean> | boolean;
 }
 
-async function sha256Hex(input: Uint8Array | string): Promise<string> {
-  const data =
-    typeof input === "string" ? new TextEncoder().encode(input) : input;
-  const digest = await crypto.subtle.digest(
-    "SHA-256",
-    data.buffer as ArrayBuffer,
-  );
-  const u8 = new Uint8Array(digest);
-  let out = "";
-  for (let i = 0; i < u8.length; i++) {
-    out += u8[i].toString(16).padStart(2, "0");
-  }
-  return out;
-}
-
-async function sha1Hex(input: Uint8Array | string): Promise<string> {
+export const sha1Hex = async (input: Uint8Array | string): Promise<string> => {
   const data =
     typeof input === "string" ? new TextEncoder().encode(input) : input;
   const digest = await crypto.subtle.digest(
@@ -63,7 +43,7 @@ async function sha1Hex(input: Uint8Array | string): Promise<string> {
   for (let i = 0; i < u8.length; i++)
     out += u8[i].toString(16).padStart(2, "0");
   return out;
-}
+};
 
 export const gitBlobSha1Hex = async (
   input: Uint8Array | string,
@@ -88,7 +68,7 @@ export class MerkleTreeBuilder {
       .sort((a, b) => a.path.localeCompare(b.path))
       .map((c) => `${c.path}:${c.hash}`)
       .join("|");
-    return sha256Hex(items);
+    return sha1Hex(items);
   }
 
   static async buildTree(

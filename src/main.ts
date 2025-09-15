@@ -637,18 +637,25 @@ export default class GithubApiSyncPlugin extends Plugin {
 
     this.localFileListCache = [];
     const walk = async (folder: string): Promise<FileInfo[]> => {
-      let output: FileInfo[] = [];
       const { files, folders } = await this.app.vault.adapter.list(folder);
-      for (const path of files) {
-        const stat = await this.app.vault.adapter.stat(path);
-        // adapter.list returns absolute-like paths from root without leading slash
-        if (stat) {
-          output.push({ path, stat });
-        }
-      }
-      for (const d of folders) {
-        output = [...output, ...(await walk(d))];
-      }
+      let output: FileInfo[] = (
+        await Promise.all(
+          files.map(async (path) => {
+            const stat = await this.app.vault.adapter.stat(path);
+            // adapter.list returns absolute-like paths from root without leading slash
+            if (stat) {
+              return [{ path, stat }];
+            } else {
+              return [];
+            }
+          }),
+        )
+      ).flat();
+
+      output = [
+        ...output,
+        ...(await Promise.all(folders.map((d) => walk(d)))).flat(),
+      ];
       return output;
     };
 
