@@ -172,7 +172,7 @@ export default class GithubApiSyncPlugin extends Plugin {
             (v) =>
               !v.path.split("/").find((w) => w.startsWith(".")) ||
               (this.settings.targetFileType === "includeConfig" &&
-                v.path.startsWith(".obsidian")),
+                v.path.startsWith(this.app.vault.configDir)),
           )
         : data;
     this.remoteFilesCache.set(ref, filtered);
@@ -639,8 +639,8 @@ export default class GithubApiSyncPlugin extends Plugin {
     const walk = async (folder: string): Promise<FileInfo[]> => {
       const { files, folders } = await this.app.vault.adapter.list(folder);
       let output: FileInfo[] = (
-        await Promise.all(
-          files.map(async (path) => {
+        await Promise.all([
+          ...files.map(async (path) => {
             const stat = await this.app.vault.adapter.stat(path);
             // adapter.list returns absolute-like paths from root without leading slash
             if (stat) {
@@ -649,13 +649,9 @@ export default class GithubApiSyncPlugin extends Plugin {
               return [];
             }
           }),
-        )
+          ...folders.map((d) => walk(d)),
+        ])
       ).flat();
-
-      output = [
-        ...output,
-        ...(await Promise.all(folders.map((d) => walk(d)))).flat(),
-      ];
       return output;
     };
 
@@ -670,7 +666,7 @@ export default class GithubApiSyncPlugin extends Plugin {
       if (opt?.include === "includeConfig") {
         this.localFileListCache = [
           ...this.localFileListCache,
-          ...(await walk(".obsidian")),
+          ...(await walk(this.app.vault.configDir)),
         ];
       }
     }
